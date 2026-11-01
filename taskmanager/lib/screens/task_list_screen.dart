@@ -4,20 +4,25 @@ import '../services/task_service.dart';
 import 'task_detail_screen.dart';
 
 class TaskListScreen extends StatefulWidget {
-  const TaskListScreen({super.key});
+  final String token;
+
+  const TaskListScreen({
+    super.key,
+    required this.token,
+  });
 
   @override
   State<TaskListScreen> createState() => _TaskListScreenState();
 }
 
 class _TaskListScreenState extends State<TaskListScreen> {
-  final TaskService taskService = TaskService();
-
+  late TaskService taskService;
   late Future<List<dynamic>> tasksFuture;
 
   @override
   void initState() {
     super.initState();
+    taskService = TaskService();
     tasksFuture = taskService.getTasks();
   }
 
@@ -127,7 +132,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
                     },
                     leading: CircleAvatar(
                       backgroundColor:
-                      getStatusColor(status).withOpacity(0.15),
+                      getStatusColor(status).withValues(alpha: 0.15),
                       child: Icon(
                         Icons.task_alt,
                         color: getStatusColor(status),

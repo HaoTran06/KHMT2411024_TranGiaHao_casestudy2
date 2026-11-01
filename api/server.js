@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -10,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 // Import routes
 const authRoutes = require('./routes/auth');
 const taskRoutes = require('./routes/task');
+const notificationRoutes = require('./routes/notification');
 
 // Middleware
 app.use(cors());
@@ -18,6 +18,7 @@ app.use(express.json());
 // API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Kết nối MongoDB
 mongoose.connect(process.env.MONGO_URI)

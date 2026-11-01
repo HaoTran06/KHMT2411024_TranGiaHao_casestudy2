@@ -5,14 +5,13 @@ const router = express.Router();
 
 const Task = require('../models/Task');
 const User = require('../models/User');
+const Notification = require('../models/Notification');
 const authMiddleware = require('../middleware/authMiddleware');
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 // Xác định quyền bằng truy vấn MongoDB
 const getTaskPermission = async (taskId, userId) => {
-    const id = new mongoose.Types.ObjectId(userId);
-
     const task = await Task.findById(taskId).lean();
 
     if (!task) return null;
@@ -95,13 +94,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
         );
 
         if (!permission) {
-            console.log('ACCESS DEBUG:', {
-                userId: req.user.id,
-                createdBy: task.createdBy,
-                assignees: task.assignees,
-                sharedWith: task.sharedWith
-            });
-
             return res.status(403).json({
                 message: 'Bạn không có quyền xem công việc này'
             });
@@ -203,10 +195,33 @@ router.put('/:id/assign', authMiddleware, async (req, res) => {
             });
         }
 
+        // Lưu danh sách người được giao trước đó
+        const oldAssignees = task.assignees.map(id => id.toString());
+
         task.assignees = assignees;
         task.primaryAssignee = primaryAssignee || null;
 
         await task.save();
+
+        // Tìm người mới được giao việc
+        const newAssignees = [...new Set(assignees.map(String))]
+            .filter(id =>
+                !oldAssignees.includes(id) &&
+                id !== req.user.id.toString()
+            );
+
+        // Tạo thông báo
+        if (newAssignees.length > 0) {
+            await Notification.insertMany(
+                newAssignees.map(userId => ({
+                    recipient: userId,
+                    sender: req.user.id,
+                    task: task._id,
+                    type: 'assigned',
+                    message: `Bạn được giao công việc: ${task.title}`
+                }))
+            );
+        }
 
         res.status(200).json({
             message: 'Giao việc thành công!',
@@ -266,6 +281,9 @@ router.post('/:id/share', authMiddleware, async (req, res) => {
             item => item.user.toString() === userId.toString()
         );
 
+        // Chỉ thông báo nếu chia sẻ mới hoặc thay đổi quyền
+        const shouldNotify = !existing || existing.role !== role;
+
         if (existing) {
             existing.role = role;
         } else {
@@ -273,6 +291,16 @@ router.post('/:id/share', authMiddleware, async (req, res) => {
         }
 
         await task.save();
+
+        if (shouldNotify) {
+            await Notification.create({
+                recipient: userId,
+                sender: req.user.id,
+                task: task._id,
+                type: 'shared',
+                message: `Bạn được chia sẻ công việc: ${task.title} với quyền ${role}`
+            });
+        }
 
         res.status(200).json({
             message: 'Chia sẻ task thành công!',

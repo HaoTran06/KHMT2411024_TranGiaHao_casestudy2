@@ -41,11 +41,15 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      if (result['message'] == 'Đăng nhập thành công!') {
+      final token = result['token'];
+
+      if (token != null && token.toString().isNotEmpty) {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (context) => const TaskListScreen(),
+            builder: (context) => TaskListScreen(
+              token: token.toString(),
+            ),
           ),
         );
       } else {
@@ -61,7 +65,9 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Lỗi kết nối: $e')),
+        SnackBar(
+          content: Text('Lỗi kết nối: $e'),
+        ),
       );
     } finally {
       if (mounted) {
