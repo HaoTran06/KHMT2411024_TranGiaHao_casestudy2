@@ -10,7 +10,21 @@ const authMiddleware = require('../middleware/authMiddleware');
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-// Xác định quyền bằng truy vấn MongoDB
+const validStatuses = ['todo', 'in_progress', 'completed'];
+const validPriorities = ['low', 'medium', 'high'];
+
+// Kiểm tra ngày hợp lệ
+const parseDate = (value) => {
+    if (value === null || value === '') return null;
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) return undefined;
+
+    return date;
+};
+
+// Xác định quyền của người dùng
 const getTaskPermission = async (taskId, userId) => {
     const task = await Task.findById(taskId).lean();
 
@@ -20,7 +34,9 @@ const getTaskPermission = async (taskId, userId) => {
         return 'owner';
     }
 
-    if (task.assignees.some(item => item.toString() === userId.toString())) {
+    if (task.assignees.some(
+        item => item.toString() === userId.toString()
+    )) {
         return 'editor';
     }
 
@@ -31,7 +47,7 @@ const getTaskPermission = async (taskId, userId) => {
     return shared ? shared.role : null;
 };
 
-// Kiểm tra danh sách user
+// Kiểm tra danh sách người dùng
 const validateUsers = async (userIds) => {
     if (!Array.isArray(userIds)) return false;
 
@@ -46,21 +62,84 @@ const validateUsers = async (userIds) => {
     return users.length === uniqueIds.length;
 };
 
+// Populate thông tin task
+const populateTask = (query) => {
+    return query
+        .populate('createdBy', 'name email')
+        .populate('assignees', 'name email')
+        .populate('primaryAssignee', 'name email')
+        .populate('sharedWith.user', 'name email');
+};
+
+// Tìm kiếm người dùng để giao việc
+router.get('/users/search', authMiddleware, async (req, res) => {
+    try {
+        const keyword = (req.query.q || '').trim();
+
+        if (!keyword) {
+            return res.status(200).json({ users: [] });
+        }
+
+        const users = await User.find({
+            _id: { $ne: req.user.id },
+            $or: [
+                { name: { $regex: keyword, $options: 'i' } },
+                { email: { $regex: keyword, $options: 'i' } }
+            ]
+        })
+            .select('name email')
+            .limit(20);
+
+        res.status(200).json({ users });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
 // Lấy danh sách task
 router.get('/', authMiddleware, async (req, res) => {
     try {
-        const tasks = await Task.find({
+        const { category, search, status, priority, sort } = req.query;
+
+        const filter = {
             $or: [
                 { createdBy: req.user.id },
                 { assignees: req.user.id },
                 { 'sharedWith.user': req.user.id }
             ]
-        })
-            .populate('createdBy', 'name email')
-            .populate('assignees', 'name email')
-            .populate('primaryAssignee', 'name email')
-            .populate('sharedWith.user', 'name email')
-            .sort({ createdAt: -1 });
+        };
+
+        if (category === 'created') {
+            filter.$or = [{ createdBy: req.user.id }];
+        } else if (category === 'assigned') {
+            filter.$or = [{ assignees: req.user.id }];
+        } else if (category === 'shared') {
+            filter.$or = [{ 'sharedWith.user': req.user.id }];
+        }
+
+        if (search) {
+            filter.title = { $regex: search, $options: 'i' };
+        }
+
+        if (status && validStatuses.includes(status)) {
+            filter.status = status;
+        }
+
+        if (priority && validPriorities.includes(priority)) {
+            filter.priority = priority;
+        }
+
+        let sortOption = { createdAt: -1 };
+
+        if (sort === 'oldest') sortOption = { createdAt: 1 };
+        if (sort === 'dueDate') sortOption = { dueDate: 1 };
+        if (sort === 'priority') {
+            sortOption = { priority: -1, createdAt: -1 };
+        }
+
+        const tasks = await populateTask(
+            Task.find(filter).sort(sortOption)
+        );
 
         res.status(200).json({
             message: 'Lấy danh sách thành công!',
@@ -80,14 +159,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
             });
         }
 
-        const task = await Task.findById(req.params.id).lean();
-
-        if (!task) {
-            return res.status(404).json({
-                message: 'Không tìm thấy task'
-            });
-        }
-
         const permission = await getTaskPermission(
             req.params.id,
             req.user.id
@@ -99,16 +170,20 @@ router.get('/:id', authMiddleware, async (req, res) => {
             });
         }
 
-        const populatedTask = await Task.findById(req.params.id)
-            .populate('createdBy', 'name email')
-            .populate('assignees', 'name email')
-            .populate('primaryAssignee', 'name email')
-            .populate('sharedWith.user', 'name email');
+        const task = await populateTask(
+            Task.findById(req.params.id)
+        );
+
+        if (!task) {
+            return res.status(404).json({
+                message: 'Không tìm thấy task'
+            });
+        }
 
         res.status(200).json({
             message: 'Lấy chi tiết thành công!',
             permission,
-            task: populatedTask
+            task
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -121,7 +196,10 @@ router.post('/', authMiddleware, async (req, res) => {
         const {
             title,
             description,
-            status,
+            startDate,
+            dueDate,
+            priority = 'medium',
+            status = 'todo',
             assignees = [],
             primaryAssignee
         } = req.body;
@@ -129,6 +207,34 @@ router.post('/', authMiddleware, async (req, res) => {
         if (typeof title !== 'string' || !title.trim()) {
             return res.status(400).json({
                 message: 'Vui lòng nhập tiêu đề'
+            });
+        }
+
+        if (!validStatuses.includes(status)) {
+            return res.status(400).json({
+                message: 'Trạng thái không hợp lệ'
+            });
+        }
+
+        if (!validPriorities.includes(priority)) {
+            return res.status(400).json({
+                message: 'Độ ưu tiên không hợp lệ'
+            });
+        }
+
+        const parsedStartDate = parseDate(startDate);
+        const parsedDueDate = parseDate(dueDate);
+
+        if (parsedStartDate === undefined || parsedDueDate === undefined) {
+            return res.status(400).json({
+                message: 'Ngày bắt đầu hoặc hạn hoàn thành không hợp lệ'
+            });
+        }
+
+        if (parsedStartDate && parsedDueDate &&
+            parsedStartDate > parsedDueDate) {
+            return res.status(400).json({
+                message: 'Ngày bắt đầu không được sau hạn hoàn thành'
             });
         }
 
@@ -147,7 +253,10 @@ router.post('/', authMiddleware, async (req, res) => {
 
         const task = await Task.create({
             title: title.trim(),
-            description,
+            description: description || '',
+            startDate: parsedStartDate,
+            dueDate: parsedDueDate,
+            priority,
             status,
             createdBy: req.user.id,
             assignees,
@@ -166,6 +275,12 @@ router.post('/', authMiddleware, async (req, res) => {
 // Giao việc cho nhiều người
 router.put('/:id/assign', authMiddleware, async (req, res) => {
     try {
+        if (!isValidId(req.params.id)) {
+            return res.status(400).json({
+                message: 'ID task không hợp lệ'
+            });
+        }
+
         const { assignees, primaryAssignee } = req.body;
 
         const task = await Task.findById(req.params.id);
@@ -182,7 +297,8 @@ router.put('/:id/assign', authMiddleware, async (req, res) => {
             });
         }
 
-        if (!Array.isArray(assignees) || !await validateUsers(assignees)) {
+        if (!Array.isArray(assignees) ||
+            !await validateUsers(assignees)) {
             return res.status(400).json({
                 message: 'Danh sách người được giao không hợp lệ'
             });
@@ -195,22 +311,22 @@ router.put('/:id/assign', authMiddleware, async (req, res) => {
             });
         }
 
-        // Lưu danh sách người được giao trước đó
-        const oldAssignees = task.assignees.map(id => id.toString());
+        const oldAssignees = task.assignees.map(
+            id => id.toString()
+        );
 
-        task.assignees = assignees;
+        task.assignees = [...new Set(assignees.map(String))];
         task.primaryAssignee = primaryAssignee || null;
 
         await task.save();
 
-        // Tìm người mới được giao việc
-        const newAssignees = [...new Set(assignees.map(String))]
+        const newAssignees = task.assignees
+            .map(id => id.toString())
             .filter(id =>
                 !oldAssignees.includes(id) &&
                 id !== req.user.id.toString()
             );
 
-        // Tạo thông báo
         if (newAssignees.length > 0) {
             await Notification.insertMany(
                 newAssignees.map(userId => ({
@@ -235,6 +351,12 @@ router.put('/:id/assign', authMiddleware, async (req, res) => {
 // Chia sẻ task
 router.post('/:id/share', authMiddleware, async (req, res) => {
     try {
+        if (!isValidId(req.params.id)) {
+            return res.status(400).json({
+                message: 'ID task không hợp lệ'
+            });
+        }
+
         const { userId, role } = req.body;
 
         if (!isValidId(userId)) {
@@ -281,7 +403,6 @@ router.post('/:id/share', authMiddleware, async (req, res) => {
             item => item.user.toString() === userId.toString()
         );
 
-        // Chỉ thông báo nếu chia sẻ mới hoặc thay đổi quyền
         const shouldNotify = !existing || existing.role !== role;
 
         if (existing) {
@@ -311,9 +432,63 @@ router.post('/:id/share', authMiddleware, async (req, res) => {
     }
 });
 
-// Cập nhật task: owner hoặc editor
+// Thu hồi quyền chia sẻ
+router.delete('/:id/share/:userId', authMiddleware, async (req, res) => {
+    try {
+        const { id, userId } = req.params;
+
+        if (!isValidId(id) || !isValidId(userId)) {
+            return res.status(400).json({
+                message: 'ID không hợp lệ'
+            });
+        }
+
+        const task = await Task.findById(id);
+
+        if (!task) {
+            return res.status(404).json({
+                message: 'Không tìm thấy task'
+            });
+        }
+
+        if (task.createdBy.toString() !== req.user.id.toString()) {
+            return res.status(403).json({
+                message: 'Chỉ chủ task mới được thu hồi quyền chia sẻ'
+            });
+        }
+
+        const oldLength = task.sharedWith.length;
+
+        task.sharedWith = task.sharedWith.filter(
+            item => item.user.toString() !== userId
+        );
+
+        if (task.sharedWith.length === oldLength) {
+            return res.status(404).json({
+                message: 'Người dùng chưa được chia sẻ task'
+            });
+        }
+
+        await task.save();
+
+        res.status(200).json({
+            message: 'Thu hồi quyền chia sẻ thành công!',
+            task
+        });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+});
+
+// Cập nhật task
 router.put('/:id', authMiddleware, async (req, res) => {
     try {
+        if (!isValidId(req.params.id)) {
+            return res.status(400).json({
+                message: 'ID task không hợp lệ'
+            });
+        }
+
         const task = await Task.findById(req.params.id);
 
         if (!task) {
@@ -333,7 +508,14 @@ router.put('/:id', authMiddleware, async (req, res) => {
             });
         }
 
-        const { title, description, status } = req.body;
+        const {
+            title,
+            description,
+            startDate,
+            dueDate,
+            priority,
+            status
+        } = req.body;
 
         if (title !== undefined) {
             if (typeof title !== 'string' || !title.trim()) {
@@ -341,11 +523,64 @@ router.put('/:id', authMiddleware, async (req, res) => {
                     message: 'Tiêu đề không được để trống'
                 });
             }
+
             task.title = title.trim();
         }
 
-        if (description !== undefined) task.description = description;
-        if (status !== undefined) task.status = status;
+        if (description !== undefined) {
+            task.description = description;
+        }
+
+        if (status !== undefined) {
+            if (!validStatuses.includes(status)) {
+                return res.status(400).json({
+                    message: 'Trạng thái không hợp lệ'
+                });
+            }
+
+            task.status = status;
+        }
+
+        if (priority !== undefined) {
+            if (!validPriorities.includes(priority)) {
+                return res.status(400).json({
+                    message: 'Độ ưu tiên không hợp lệ'
+                });
+            }
+
+            task.priority = priority;
+        }
+
+        if (startDate !== undefined) {
+            const parsed = parseDate(startDate);
+
+            if (parsed === undefined) {
+                return res.status(400).json({
+                    message: 'Ngày bắt đầu không hợp lệ'
+                });
+            }
+
+            task.startDate = parsed;
+        }
+
+        if (dueDate !== undefined) {
+            const parsed = parseDate(dueDate);
+
+            if (parsed === undefined) {
+                return res.status(400).json({
+                    message: 'Hạn hoàn thành không hợp lệ'
+                });
+            }
+
+            task.dueDate = parsed;
+        }
+
+        if (task.startDate && task.dueDate &&
+            task.startDate > task.dueDate) {
+            return res.status(400).json({
+                message: 'Ngày bắt đầu không được sau hạn hoàn thành'
+            });
+        }
 
         await task.save();
 
@@ -358,9 +593,15 @@ router.put('/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// Xóa task: chỉ owner
+// Xóa task
 router.delete('/:id', authMiddleware, async (req, res) => {
     try {
+        if (!isValidId(req.params.id)) {
+            return res.status(400).json({
+                message: 'ID task không hợp lệ'
+            });
+        }
+
         const task = await Task.findById(req.params.id);
 
         if (!task) {

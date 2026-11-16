@@ -2,6 +2,9 @@
 import 'package:flutter/material.dart';
 import '../services/task_service.dart';
 import 'task_detail_screen.dart';
+import 'add_task_screen.dart';
+import 'notification_screen.dart';
+import 'profile_screen.dart';
 
 class TaskListScreen extends StatefulWidget {
   final String token;
@@ -22,7 +25,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
   @override
   void initState() {
     super.initState();
-    taskService = TaskService();
+    taskService = TaskService(token: widget.token);
     tasksFuture = taskService.getTasks();
   }
 
@@ -56,6 +59,60 @@ class _TaskListScreenState extends State<TaskListScreen> {
     await tasksFuture;
   }
 
+  Future<void> openTaskDetail(String taskId) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TaskDetailScreen(
+          taskId: taskId,
+          token: widget.token,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    await refreshTasks();
+  }
+
+  Future<void> openAddTaskScreen() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AddTaskScreen(
+          token: widget.token,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (result == true) {
+      await refreshTasks();
+    }
+  }
+
+  Future<void> openNotifications() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => NotificationScreen(
+          token: widget.token,
+        ),
+      ),
+    );
+  }
+
+  Future<void> openProfile() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ProfileScreen(
+          token: widget.token,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -63,11 +120,35 @@ class _TaskListScreenState extends State<TaskListScreen> {
       appBar: AppBar(
         title: const Text(
           'Công việc của tôi',
-          style: TextStyle(fontWeight: FontWeight.bold),
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+          ),
         ),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
         centerTitle: true,
+        actions: [
+          // Nút hồ sơ cá nhân
+          IconButton(
+            onPressed: openProfile,
+            icon: const Icon(Icons.account_circle),
+            tooltip: 'Hồ sơ cá nhân',
+          ),
+
+          // Nút thông báo
+          IconButton(
+            onPressed: openNotifications,
+            icon: const Icon(Icons.notifications),
+            tooltip: 'Thông báo',
+          ),
+
+          // Nút làm mới
+          IconButton(
+            onPressed: refreshTasks,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Làm mới',
+          ),
+        ],
       ),
       body: FutureBuilder<List<dynamic>>(
         future: tasksFuture,
@@ -80,17 +161,28 @@ class _TaskListScreenState extends State<TaskListScreen> {
 
           if (snapshot.hasError) {
             return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 50),
-                  const SizedBox(height: 12),
-                  Text('Lỗi: ${snapshot.error}'),
-                  ElevatedButton(
-                    onPressed: refreshTasks,
-                    child: const Text('Thử lại'),
-                  ),
-                ],
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.error_outline,
+                      size: 50,
+                      color: Colors.red,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Lỗi: ${snapshot.error}',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: refreshTasks,
+                      child: const Text('Thử lại'),
+                    ),
+                  ],
+                ),
               ),
             );
           }
@@ -98,8 +190,31 @@ class _TaskListScreenState extends State<TaskListScreen> {
           final tasks = snapshot.data ?? [];
 
           if (tasks.isEmpty) {
-            return const Center(
-              child: Text('Chưa có công việc nào'),
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.assignment_outlined,
+                    size: 75,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(height: 15),
+                  const Text(
+                    'Chưa có công việc nào',
+                    style: TextStyle(
+                      fontSize: 17,
+                      color: Colors.grey,
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  ElevatedButton.icon(
+                    onPressed: openAddTaskScreen,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Tạo công việc'),
+                  ),
+                ],
+              ),
             );
           }
 
@@ -121,18 +236,11 @@ class _TaskListScreenState extends State<TaskListScreen> {
                   child: ListTile(
                     contentPadding: const EdgeInsets.all(16),
                     onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => TaskDetailScreen(
-                            taskId: task['_id'].toString(),
-                          ),
-                        ),
-                      );
+                      openTaskDetail(task['_id'].toString());
                     },
                     leading: CircleAvatar(
                       backgroundColor:
-                      getStatusColor(status).withValues(alpha: 0.15),
+                      getStatusColor(status).withOpacity(0.15),
                       child: Icon(
                         Icons.task_alt,
                         color: getStatusColor(status),
@@ -166,13 +274,22 @@ class _TaskListScreenState extends State<TaskListScreen> {
                         ],
                       ),
                     ),
-                    trailing: const Icon(Icons.chevron_right),
+                    trailing: const Icon(
+                      Icons.chevron_right,
+                    ),
                   ),
                 );
               },
             ),
           );
         },
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: openAddTaskScreen,
+        backgroundColor: Colors.deepPurple,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.add),
+        label: const Text('Tạo công việc'),
       ),
     );
   }
